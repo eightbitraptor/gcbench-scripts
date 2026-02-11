@@ -11,13 +11,15 @@ BENCHMARKS = {
     description: 'Sweeping performance (freeing dead objects)',
     primary_metric: :sweep_ms,
     code: <<~'RUBY'
-      # Create objects that will all become garbage
       arr = Array.new(5_000_000) { Object.new }
+
+      # Flush any pending lazy sweeps from allocation-triggered GCs
+      GC.start(full_mark: true, immediate_sweep: true)
+
       arr = nil  # All 5M objects now garbage
 
-      # Measure the GC that frees them (no pre-GC - we want to measure sweep!)
       before = GC.stat
-      GC.start(full_mark: true)
+      GC.start(full_mark: true, immediate_sweep: true)
       after = GC.stat
 
       sweep_ms = after[:sweeping_time] - before[:sweeping_time]
@@ -31,13 +33,18 @@ BENCHMARKS = {
     description: 'Marking performance (traversing live object graph)',
     primary_metric: :mark_ms,
     code: <<~'RUBY'
-      # Deterministic object sizes
       srand(12345)
-      arr = Array.new(5_000_000) { "x" * rand(100) }
-      GC.start  # Ensure clean slate, objects promoted to old gen
+      nodes = Array.new(5_000_000) { [nil, nil] }
+      nodes.each_with_index do |node, i|
+        node[0] = nodes[rand(i + 1)]
+        node[1] = nodes[rand(i + 1)] if i > 0
+      end
+
+      # Promote to old gen (RVALUE_OLD_AGE=3, need 3 cycles)
+      3.times { GC.start(full_mark: true, immediate_sweep: true) }
 
       before = GC.stat
-      GC.start(full_mark: true)
+      GC.start(full_mark: true, immediate_sweep: true)
       after = GC.stat
 
       mark_ms = after[:marking_time] - before[:marking_time]
@@ -49,8 +56,8 @@ BENCHMARKS = {
   }
 }.freeze
 
-WARMUP_RUNS = 1
-DEFAULT_BENCH_RUNS = 5
+WARMUP_RUNS = 2
+DEFAULT_BENCH_RUNS = 10
 
 BenchResult = Struct.new(:wall_time, :mark_ms, :sweep_ms, :gc_count, keyword_init: true)
 
@@ -91,6 +98,58 @@ module Stats
     return T_CRITICAL_95[lower] if lower == upper
     t_low, t_high = T_CRITICAL_95[lower], T_CRITICAL_95[upper]
     t_low + (t_high - t_low) * (df - lower).to_f / (upper - lower)
+  end
+
+  # Median absolute deviation — robust spread estimator
+  def mad(values)
+    return nil if values.empty?
+    med = median(values)
+    deviations = values.map { |v| (v - med).abs }
+    median(deviations)
+  end
+
+  # Flag observations > threshold MADs from median
+  def outlier_indices(values, threshold: 3.0)
+    return [] if values.size < 3
+    med = median(values)
+    m = mad(values)
+    return [] if m.nil? || m == 0
+    values.each_index.select { |i| (values[i] - med).abs > threshold * m }
+  end
+
+  # Bootstrap CI on percentage change relative to baseline (non-parametric)
+  def bootstrap_pct_ci(sample1, sample2, n_boot: 10_000, alpha: 0.05)
+    rng = Random.new(54321)
+    n1, n2 = sample1.size, sample2.size
+    pcts = Array.new(n_boot) do
+      s1 = Array.new(n1) { sample1[rng.rand(n1)] }
+      s2 = Array.new(n2) { sample2[rng.rand(n2)] }
+      m1 = mean(s1)
+      m1.zero? ? 0.0 : ((m1 - mean(s2)) / m1 * 100)
+    end
+    pcts.sort!
+    lo = (n_boot * alpha / 2).floor
+    hi = (n_boot * (1 - alpha / 2)).floor
+    { ci_low: pcts[lo], ci_high: pcts[hi], median_pct: pcts[n_boot / 2] }
+  end
+
+  # Glass's delta — effect size using baseline stddev as denominator.
+  # Preferred over pooled Cohen's d when variances may differ (Welch scenario).
+  def glass_delta(baseline, experiment)
+    return nil if baseline.size < 2 || experiment.size < 2
+    s = stddev(baseline)
+    return nil if s == 0
+    (mean(baseline) - mean(experiment)) / s
+  end
+
+  def effect_size_label(d)
+    return "negligible" if d.nil?
+    case d.abs
+    when 0...0.2 then "negligible"
+    when 0.2...0.5 then "small"
+    when 0.5...0.8 then "medium"
+    else "large"
+    end
   end
 
   # Welch's t-test for comparing two samples with potentially different variances
@@ -222,7 +281,7 @@ class BenchmarkRunner
   def run_once(ruby_path, code)
     start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     stdout, stderr, status = Open3.capture3(
-      ruby_path, '--disable-gems', '--yjit', '-e', code
+      ruby_path, '--disable-gems', '-e', code
     )
     wall_time = Process.clock_gettime(Process::CLOCK_MONOTONIC) - start
 
@@ -262,29 +321,38 @@ class BenchmarkRunner
 
     puts
     puts "  #{metric}:"
-    puts "  %-12s %10s %10s %10s" % ['', 'mean', 'median', 'stddev']
-    puts "  #{'-' * 44}"
+    puts "  %-12s %10s %10s %10s %10s" % ['', 'mean', 'median', 'stddev', 'MAD']
+    puts "  #{'-' * 56}"
 
     [['baseline', baseline_times], ['experiment', experiment_times]].each do |label, times|
-      puts "  %-12s %9.1fms %9.1fms %9.2fms" % [
+      outliers = Stats.outlier_indices(times)
+      outlier_mark = outliers.empty? ? '' : " (#{outliers.size} outlier#{'s' if outliers.size > 1})"
+      puts "  %-12s %9.1fms %9.1fms %9.2fms %9.2fms%s" % [
         label,
         Stats.mean(times),
         Stats.median(times),
-        Stats.stddev(times) || 0
+        Stats.stddev(times) || 0,
+        Stats.mad(times) || 0,
+        outlier_mark
       ]
     end
 
     if @verbose
       puts
-      puts "  baseline raw:   #{baseline_times.map { |t| "#{t.round(1)}ms" }.join(', ')}"
-      puts "  experiment raw: #{experiment_times.map { |t| "#{t.round(1)}ms" }.join(', ')}"
+      [['baseline', baseline_times], ['experiment', experiment_times]].each do |label, times|
+        outliers = Stats.outlier_indices(times)
+        tagged = times.each_with_index.map do |t, i|
+          outliers.include?(i) ? "\e[33m#{t.round(1)}ms!\e[0m" : "#{t.round(1)}ms"
+        end
+        puts "  #{label} raw: #{tagged.join(', ')}"
+      end
     end
 
     comparison = Stats.welch_t_test(baseline_times, experiment_times)
-    print_comparison(comparison) if comparison
+    print_comparison(baseline_times, experiment_times, comparison) if comparison
   end
 
-  def print_comparison(comparison)
+  def print_comparison(baseline_times, experiment_times, comparison)
     puts
     speedup = comparison[:speedup_pct]
     direction = speedup > 0 ? 'faster' : 'slower'
@@ -292,9 +360,22 @@ class BenchmarkRunner
     reset = "\e[0m"
     sig_marker = comparison[:significant] ? '*' : ''
 
-    puts "  Difference: #{color}%+.2f%%%s#{reset} (experiment #{direction})" % [speedup, sig_marker]
-    puts "  95%% CI:     [%+.2fms, %+.2fms]" % [comparison[:ci_low], comparison[:ci_high]]
-    puts "  t-stat:     %.3f (df=%d)" % [comparison[:t_stat], comparison[:df]]
+    puts "  Difference: #{color}%+.2f%%%s#{reset} (experiment is #{direction})" % [speedup, sig_marker]
+
+    # Welch's t-test CI (absolute)
+    puts "  Welch 95%% CI: [%+.1fms, %+.1fms]" % [comparison[:ci_low], comparison[:ci_high]]
+    puts "  t-stat:        %.3f (df=%d)" % [comparison[:t_stat], comparison[:df]]
+
+    # Bootstrap CI (percentage)
+    boot_pct = Stats.bootstrap_pct_ci(baseline_times, experiment_times)
+    puts "  Boot 95%% CI:  [%+.2f%%, %+.2f%%]" % [boot_pct[:ci_low], boot_pct[:ci_high]]
+
+    # Effect size (Glass's delta — uses baseline stddev as reference)
+    d = Stats.glass_delta(baseline_times, experiment_times)
+    if d
+      label = Stats.effect_size_label(d)
+      puts "  Effect size:   %.3f (%s)" % [d, label]
+    end
 
     unless comparison[:significant]
       puts "  \e[33m(not statistically significant at p<0.05)\e[0m"
@@ -312,16 +393,17 @@ class BenchmarkRunner
       baseline_times = extract_times(data[:baseline], metric)
       experiment_times = extract_times(data[:experiment], metric)
       comparison = Stats.welch_t_test(baseline_times, experiment_times)
+      boot = Stats.bootstrap_pct_ci(baseline_times, experiment_times)
 
-      [name, baseline_times, experiment_times, comparison]
+      [name, baseline_times, experiment_times, comparison, boot]
     end
 
-    puts "%-10s │ %12s │ %12s │ %10s │ %s" % [
-      'Benchmark', 'Baseline', 'Experiment', 'Change', 'Significance'
+    puts "%-10s │ %12s │ %12s │ %10s │ %18s │ %s" % [
+      'Benchmark', 'Baseline', 'Experiment', 'Change', 'Boot 95% CI', 'Significance'
     ]
-    puts '─' * 75
+    puts '─' * 90
 
-    rows.each do |name, baseline_times, experiment_times, comparison|
+    rows.each do |name, baseline_times, experiment_times, comparison, boot|
       baseline_mean = Stats.mean(baseline_times)
       experiment_mean = Stats.mean(experiment_times)
       speedup = comparison&.fetch(:speedup_pct) ||
@@ -331,20 +413,26 @@ class BenchmarkRunner
       color = speedup > 0 ? "\e[32m" : (speedup < 0 ? "\e[31m" : "")
       reset = speedup != 0 ? "\e[0m" : ""
 
-      puts "%-10s │ %10.1fms │ %10.1fms │ #{color}%+9.2f%%#{reset} │ %s" % [
+      boot_ci = "[%+.1f%%, %+.1f%%]" % [boot[:ci_low], boot[:ci_high]]
+
+      puts "%-10s │ %10.1fms │ %10.1fms │ #{color}%+9.2f%%#{reset} │ %18s │ %s" % [
         name,
         baseline_mean,
         experiment_mean,
         speedup,
+        boot_ci,
         sig ? 'p < 0.05 **' : 'not significant'
       ]
     end
 
-    puts '─' * 75
+    puts '─' * 90
     puts
-    puts "** = statistically significant at 95% confidence level"
+    puts "** = statistically significant at 95% confidence level (Welch's t-test)"
     puts "Positive change = experiment is faster than baseline"
-    puts "Times shown are GC phase times from GC.stat, not wall-clock"
+    puts "Times are GC phase CPU time from GC.stat; summary shows means"
+    puts "Per-benchmark details include median + MAD for robustness"
+    puts "With default settings (10 runs, 5M objects): reliably detects ~5% differences"
+    puts "For smaller effects, use --runs=20 or higher"
     puts
   end
 end
