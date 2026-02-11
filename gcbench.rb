@@ -33,7 +33,7 @@ BENCHMARKS = {
     code: <<~'RUBY'
       # Deterministic object sizes
       srand(12345)
-      arr = Array.new(10_000_000) { "x" * rand(100) }
+      arr = Array.new(5_000_000) { "x" * rand(100) }
       GC.start  # Ensure clean slate, objects promoted to old gen
 
       before = GC.stat
