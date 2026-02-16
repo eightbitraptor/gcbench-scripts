@@ -173,9 +173,9 @@ end
 
 def color_mem_pct(pct)
   return '' unless pct
-  if pct < -0.05
+  if pct < -1.0
     "\e[32m%+.1f%%\e[0m" % pct
-  elsif pct > 0.05
+  elsif pct > 1.0
     "\e[31m%+.1f%%\e[0m" % pct
   else
     "%+.1f%%" % pct
