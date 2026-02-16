@@ -311,7 +311,7 @@ class MemBenchRunner
   def print_row(label, b_val, e_val, format)
     return unless b_val && e_val
 
-    delta = e_val.is_a?(Float) ? e_val - b_val : e_val - b_val
+    delta = e_val - b_val
     b_str, e_str, d_str = case format
     when :kb
       [fmt_kb(b_val), fmt_kb(e_val), fmt_kb(delta, signed: true)]
