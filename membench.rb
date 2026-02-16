@@ -61,22 +61,22 @@ REPORT_CODE = <<~'RUBY'
   require 'objspace'
   GC.start(full_mark: true, immediate_sweep: true)
 
-  _s = GC.stat
-  _s.each { |k, v| STDERR.puts "STAT_#{k.to_s.upcase}=#{v}" }
+  gc_stat = GC.stat
+  gc_stat.each { |k, v| STDERR.puts "STAT_#{k.to_s.upcase}=#{v}" }
 
   begin
-    GC.stat_heap.each do |_pid, _ps|
-      _ps.each { |k, v| STDERR.puts "POOL_#{_pid}_#{k.to_s.upcase}=#{v}" }
+    GC.stat_heap.each do |pool_id, pool_stat|
+      pool_stat.each { |k, v| STDERR.puts "POOL_#{pool_id}_#{k.to_s.upcase}=#{v}" }
     end
   rescue NoMethodError
   end
 
-  _rss = if File.exist?('/proc/self/status')
+  rss = if File.exist?('/proc/self/status')
     File.read('/proc/self/status')[/VmRSS:\s*(\d+)/, 1].to_i
   else
     `ps -o rss= -p #{Process.pid}`.strip.to_i
   end
-  STDERR.puts "RSS_KB=#{_rss}"
+  STDERR.puts "RSS_KB=#{rss}"
   STDERR.puts "MEMSIZE_OF_ALL=#{ObjectSpace.memsize_of_all}"
 RUBY
 
