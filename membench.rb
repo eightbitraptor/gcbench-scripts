@@ -52,6 +52,8 @@ SCENARIOS = {
       GC.start(full_mark: true, immediate_sweep: true)
       (500_000...arr.length).each { |i| arr[i] = nil }
       3.times { GC.start(full_mark: true, immediate_sweep: true) }
+      GC.compact if GC.respond_to?(:compact)
+      GC.start(full_mark: true, immediate_sweep: true)
     RUBY
   },
 }.freeze
