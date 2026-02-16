@@ -192,6 +192,7 @@ class MemBenchRunner
   end
 
   def run_all
+    $stdout.sync = true
     validate_rubies!
     print_header
 
