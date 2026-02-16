@@ -275,7 +275,8 @@ class MemBenchRunner
   def run_once(ruby_path, code)
     _, stderr, status = Open3.capture3(ruby_path, '--disable-gems', '-e', code)
     unless status.success?
-      warn "  Warning: process exited #{status.exitstatus}"
+      info = status.signaled? ? "signal #{status.termsig}" : "status #{status.exitstatus}"
+      warn "  Warning: process exited (#{info})"
       return nil
     end
     parse_report(stderr)
