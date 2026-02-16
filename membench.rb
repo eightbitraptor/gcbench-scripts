@@ -292,8 +292,10 @@ class MemBenchRunner
 
     print_row('RSS',              b[:rss_kb],                          e[:rss_kb],                          :kb)
     print_row('Heap Pages',       b[:stat][:heap_allocated_pages],     e[:stat][:heap_allocated_pages],     :count)
-    print_row('Eden Pages',       b[:stat][:heap_eden_pages],          e[:stat][:heap_eden_pages],          :count)
-    print_row('Tomb Pages',       b[:stat][:heap_tomb_pages],          e[:stat][:heap_tomb_pages],          :count)
+    print_row('Eden Pages',       b[:stat][:heap_eden_pages] || sum_pool_stat(b, :heap_eden_pages),
+                                   e[:stat][:heap_eden_pages] || sum_pool_stat(e, :heap_eden_pages),  :count)
+    print_row('Tomb Pages',       b[:stat][:heap_tomb_pages] || sum_pool_stat(b, :heap_tomb_pages),
+                                   e[:stat][:heap_tomb_pages] || sum_pool_stat(e, :heap_tomb_pages),  :count)
     print_row('Live Slots',       b[:stat][:heap_live_slots],          e[:stat][:heap_live_slots],          :count)
     print_row('Free Slots',       b[:stat][:heap_free_slots],          e[:stat][:heap_free_slots],          :count)
     print_row('Total Alloc Pages', b[:stat][:total_allocated_pages],   e[:stat][:total_allocated_pages],    :count)
@@ -361,6 +363,11 @@ class MemBenchRunner
         pid, slot_sz, b_eden, e_eden, eden_d, b_tomb, e_tomb, tomb_d
       ]
     end
+  end
+
+  def sum_pool_stat(report, key)
+    vals = report[:pools].values.filter_map { |p| p[key] }
+    vals.empty? ? nil : vals.sum
   end
 
   def utilization(report)
