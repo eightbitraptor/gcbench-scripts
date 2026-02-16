@@ -183,10 +183,11 @@ def color_mem_pct(pct)
 end
 
 class MemBenchRunner
-  def initialize(baseline:, experiment:, runs:, verbose:, scenarios:)
+  def initialize(baseline:, experiment:, runs:, warmup:, verbose:, scenarios:)
     @baseline = baseline
     @experiment = experiment
     @runs = runs
+    @warmup = warmup
     @verbose = verbose
     @scenarios = scenarios
   end
@@ -240,6 +241,12 @@ class MemBenchRunner
     puts "\u2500" * 60
 
     code = config[:code] + "\n" + REPORT_CODE
+
+    @warmup.times do
+      run_once(@baseline, code)
+      run_once(@experiment, code)
+    end
+
     print '  runs: '
     baseline_reports = []
     experiment_reports = []
@@ -411,7 +418,7 @@ class MemBenchRunner
 end
 
 def main
-  options = { runs: DEFAULT_RUNS, verbose: false, scenarios: nil }
+  options = { runs: DEFAULT_RUNS, warmup: 1, verbose: false, scenarios: nil }
 
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: #{$0} --baseline=RUBY --experiment=RUBY [options]"
@@ -426,6 +433,10 @@ def main
 
     opts.on('--runs=N', Integer, "Runs per scenario (default: #{DEFAULT_RUNS})") do |n|
       options[:runs] = n
+    end
+
+    opts.on('--warmup=N', Integer, 'Warmup iterations to discard (default: 1)') do |n|
+      options[:warmup] = n
     end
 
     opts.on('--scenario=NAME', 'Run specific scenario (repeatable)') do |name|
@@ -461,6 +472,7 @@ def main
     baseline: options[:baseline],
     experiment: options[:experiment],
     runs: options[:runs],
+    warmup: options[:warmup],
     verbose: options[:verbose],
     scenarios: scenarios,
   )
