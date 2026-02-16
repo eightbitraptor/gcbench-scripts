@@ -112,6 +112,12 @@ def median(values)
   sorted.length.odd? ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0
 end
 
+def mad(values)
+  med = median(values)
+  return nil unless med
+  median(values.map { |v| (v - med).abs })
+end
+
 def median_report(reports)
   return nil if reports.empty?
 
@@ -269,7 +275,7 @@ class MemBenchRunner
     b = median_report(baseline_reports)
     e = median_report(experiment_reports)
 
-    print_comparison(b, e)
+    print_comparison(b, e, baseline_reports, experiment_reports)
     print_size_pools(b, e) if !b[:pools].empty? && !e[:pools].empty?
 
     if @verbose
@@ -292,7 +298,7 @@ class MemBenchRunner
     parse_report(stderr)
   end
 
-  def print_comparison(b, e)
+  def print_comparison(b, e, baseline_reports, experiment_reports)
     puts
     puts "  %-26s %12s %12s %12s %9s" % ['Metric', 'Baseline', 'Experiment', 'Delta', 'Change']
     puts "  #{'─' * 75}"
@@ -319,6 +325,8 @@ class MemBenchRunner
         'Heap Utilization', b_util, e_util, '', diff
       ]
     end
+
+    print_variability(baseline_reports, experiment_reports)
   end
 
   def print_row(label, b_val, e_val, format)
@@ -336,6 +344,25 @@ class MemBenchRunner
 
     pct = pct_change(b_val, e_val)
     puts "  %-26s %12s %12s %12s %9s" % [label, b_str, e_str, d_str, color_mem_pct(pct)]
+  end
+
+  def print_variability(baseline_reports, experiment_reports)
+    b_rss = baseline_reports.map { |r| r[:rss_kb] }
+    e_rss = experiment_reports.map { |r| r[:rss_kb] }
+    b_mad = mad(b_rss)
+    e_mad = mad(e_rss)
+    return unless b_mad && e_mad
+
+    puts
+    puts "  Variability (MAD):  baseline %s  experiment %s" % [
+      fmt_kb(b_mad), fmt_kb(e_mad)
+    ]
+
+    b_med = median(b_rss)
+    cv = b_med && b_med > 0 ? (b_mad.to_f / b_med * 100) : 0
+    if cv > 5
+      puts "  \e[33mWarning: baseline CV > 5%% — results may be noisy\e[0m"
+    end
   end
 
   def print_size_pools(b, e)
