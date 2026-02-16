@@ -84,110 +84,6 @@ RUBY
 
 DEFAULT_RUNS = 11
 
-def parse_report(stderr)
-  report = { stat: {}, pools: {}, rss_kb: 0, memsize_of_all: 0 }
-
-  stderr.each_line do |line|
-    case line.strip
-    when /\ASTAT_(\w+)=(-?\d+)\z/
-      report[:stat][$1.downcase.to_sym] = $2.to_i
-    when /\APOOL_(\d+)_(\w+)=(-?\d+)\z/
-      pid = $1.to_i
-      report[:pools][pid] ||= {}
-      report[:pools][pid][$2.downcase.to_sym] = $3.to_i
-    when /\ARSS_KB=(\d+)\z/
-      report[:rss_kb] = $1.to_i
-    when /\AMEMSIZE_OF_ALL=(\d+)\z/
-      report[:memsize_of_all] = $1.to_i
-    end
-  end
-
-  report
-end
-
-def median(values)
-  return nil if values.empty?
-  sorted = values.sort
-  mid = sorted.length / 2
-  sorted.length.odd? ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0
-end
-
-def mad(values)
-  med = median(values)
-  return nil unless med
-  median(values.map { |v| (v - med).abs })
-end
-
-def median_report(reports)
-  return nil if reports.empty?
-
-  result = {
-    rss_kb: median(reports.map { |r| r[:rss_kb] }),
-    memsize_of_all: median(reports.map { |r| r[:memsize_of_all] }),
-    stat: {},
-    pools: {},
-  }
-
-  all_stat_keys = reports.flat_map { |r| r[:stat].keys }.uniq
-  all_stat_keys.each do |key|
-    vals = reports.map { |r| r[:stat][key] }.compact
-    result[:stat][key] = median(vals) unless vals.empty?
-  end
-
-  all_pool_ids = reports.flat_map { |r| r[:pools].keys }.uniq.sort
-  all_pool_ids.each do |pid|
-    result[:pools][pid] = {}
-    pool_keys = reports.flat_map { |r| (r[:pools][pid] || {}).keys }.uniq
-    pool_keys.each do |key|
-      vals = reports.map { |r| r.dig(:pools, pid, key) }.compact
-      result[:pools][pid][key] = median(vals) unless vals.empty?
-    end
-  end
-
-  result
-end
-
-def fmt_bytes(n, signed: false)
-  return "\u2014" unless n
-  prefix = signed && n > 0 ? '+' : ''
-  abs = n.abs
-  if abs >= 1_073_741_824
-    "%s%.1f GB" % [prefix, n / 1_073_741_824.0]
-  elsif abs >= 1_048_576
-    "%s%.1f MB" % [prefix, n / 1_048_576.0]
-  elsif abs >= 1024
-    "%s%.1f KB" % [prefix, n / 1024.0]
-  else
-    "%s%d B" % [prefix, n]
-  end
-end
-
-def fmt_kb(n, signed: false)
-  fmt_bytes(n ? n * 1024 : nil, signed: signed)
-end
-
-def fmt_count(n, signed: false)
-  return "\u2014" unless n
-  v = n.is_a?(Float) ? n.round : n
-  signed && v > 0 ? "+#{v}" : v.to_s
-end
-
-def pct_change(baseline, experiment)
-  return nil unless baseline && experiment && baseline != 0
-  (experiment - baseline).to_f / baseline * 100
-end
-
-def color_mem_pct(pct)
-  return '' unless pct
-  if pct < -1.0
-    "\e[32m%+.1f%%\e[0m" % pct
-  elsif pct > 1.0
-    "\e[31m%+.1f%%\e[0m" % pct
-  else
-    "%+.1f%%" % pct
-  end
-end
-
 class MemBenchRunner
   def initialize(baseline:, experiment:, runs:, warmup:, verbose:, scenarios:)
     @baseline = baseline
@@ -213,6 +109,110 @@ class MemBenchRunner
   end
 
   private
+
+  def parse_report(stderr)
+    report = { stat: {}, pools: {}, rss_kb: 0, memsize_of_all: 0 }
+
+    stderr.each_line do |line|
+      case line.strip
+      when /\ASTAT_(\w+)=(-?\d+)\z/
+        report[:stat][$1.downcase.to_sym] = $2.to_i
+      when /\APOOL_(\d+)_(\w+)=(-?\d+)\z/
+        pid = $1.to_i
+        report[:pools][pid] ||= {}
+        report[:pools][pid][$2.downcase.to_sym] = $3.to_i
+      when /\ARSS_KB=(\d+)\z/
+        report[:rss_kb] = $1.to_i
+      when /\AMEMSIZE_OF_ALL=(\d+)\z/
+        report[:memsize_of_all] = $1.to_i
+      end
+    end
+
+    report
+  end
+
+  def median(values)
+    return nil if values.empty?
+    sorted = values.sort
+    mid = sorted.length / 2
+    sorted.length.odd? ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0
+  end
+
+  def mad(values)
+    med = median(values)
+    return nil unless med
+    median(values.map { |v| (v - med).abs })
+  end
+
+  def median_report(reports)
+    return nil if reports.empty?
+
+    result = {
+      rss_kb: median(reports.map { |r| r[:rss_kb] }),
+      memsize_of_all: median(reports.map { |r| r[:memsize_of_all] }),
+      stat: {},
+      pools: {},
+    }
+
+    all_stat_keys = reports.flat_map { |r| r[:stat].keys }.uniq
+    all_stat_keys.each do |key|
+      vals = reports.map { |r| r[:stat][key] }.compact
+      result[:stat][key] = median(vals) unless vals.empty?
+    end
+
+    all_pool_ids = reports.flat_map { |r| r[:pools].keys }.uniq.sort
+    all_pool_ids.each do |pid|
+      result[:pools][pid] = {}
+      pool_keys = reports.flat_map { |r| (r[:pools][pid] || {}).keys }.uniq
+      pool_keys.each do |key|
+        vals = reports.map { |r| r.dig(:pools, pid, key) }.compact
+        result[:pools][pid][key] = median(vals) unless vals.empty?
+      end
+    end
+
+    result
+  end
+
+  def fmt_bytes(n, signed: false)
+    return "\u2014" unless n
+    prefix = signed && n > 0 ? '+' : ''
+    abs = n.abs
+    if abs >= 1_073_741_824
+      "%s%.1f GB" % [prefix, n / 1_073_741_824.0]
+    elsif abs >= 1_048_576
+      "%s%.1f MB" % [prefix, n / 1_048_576.0]
+    elsif abs >= 1024
+      "%s%.1f KB" % [prefix, n / 1024.0]
+    else
+      "%s%d B" % [prefix, n]
+    end
+  end
+
+  def fmt_kb(n, signed: false)
+    fmt_bytes(n ? n * 1024 : nil, signed: signed)
+  end
+
+  def fmt_count(n, signed: false)
+    return "\u2014" unless n
+    v = n.is_a?(Float) ? n.round : n
+    signed && v > 0 ? "+#{v}" : v.to_s
+  end
+
+  def pct_change(baseline, experiment)
+    return nil unless baseline && experiment && baseline != 0
+    (experiment - baseline).to_f / baseline * 100
+  end
+
+  def color_mem_pct(pct)
+    return '' unless pct
+    if pct < -1.0
+      "\e[32m%+.1f%%\e[0m" % pct
+    elsif pct > 1.0
+      "\e[31m%+.1f%%\e[0m" % pct
+    else
+      "%+.1f%%" % pct
+    end
+  end
 
   def validate_rubies!
     [@baseline, @experiment].each do |ruby|
