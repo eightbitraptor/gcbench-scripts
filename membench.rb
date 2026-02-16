@@ -442,14 +442,9 @@ def main
   end
 
   scenarios = if options[:scenarios]
-    selected = {}
-    options[:scenarios].each do |name|
-      unless SCENARIOS.key?(name)
-        abort "Unknown scenario: #{name}\nAvailable: #{SCENARIOS.keys.join(', ')}"
-      end
-      selected[name] = SCENARIOS[name]
-    end
-    selected
+    unknown = options[:scenarios] - SCENARIOS.keys
+    abort "Unknown scenario: #{unknown.first}\nAvailable: #{SCENARIOS.keys.join(', ')}" if unknown.any?
+    SCENARIOS.slice(*options[:scenarios])
   else
     SCENARIOS
   end
