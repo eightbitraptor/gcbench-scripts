@@ -245,12 +245,12 @@ class MemBenchRunner
     experiment_reports = []
 
     @runs.times do
-      b = run_once(@baseline, code)
-      baseline_reports << b if b
-      print 'B'
-      e = run_once(@experiment, code)
-      experiment_reports << e if e
-      print 'E'
+      pair = [
+        -> { r = run_once(@baseline, code); baseline_reports << r if r; print 'B' },
+        -> { r = run_once(@experiment, code); experiment_reports << r if r; print 'E' },
+      ]
+      pair.shuffle!
+      pair.each(&:call)
     end
     puts
 
